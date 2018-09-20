@@ -1,121 +1,218 @@
-// https://github.com/Schmavery/facebook-chat-api
 
-const fs = require("fs");
 const login = require("facebook-chat-api");
-const handler = require("./ChatHandler");
+const strings = require("./Strings.js");
+const json = require("./json_helper.js")
+const msgHandler = require("./message_handler.js");
+const t = require("./time.js");
+const usr = require("./user.js")
 
-// CONST IDS
-var BOT_ID = 100027355535144;
-var MY_SENDER_ID = 616280252;
-var BOYS_THREAD_ID = 253740418046451;
-
-// manually stop listening as fail safe
-var listening = true;
-
-// Time between updates
-var time = 1000 * 60 * 60 * 8;
-
-// Initialize handler
-handler.initialize(BOYS_THREAD_ID);
-
-// Will stop when you say '/zzz'
-//login({appState: JSON.parse(fs.readFileSync('appstate.json', 'utf8'))}, (err, api) =>
-login(handler.cred, (err, api) =>
+// ~~~ TESTING KIT ~~~
+var updateNicknames = false;
+var testing = false;
+if (testing)
 {
-    // error check
-    if(err) return console.error(err);
+    console.log("TESTING IS ON");
 
-    // Let them know we are live
-    handler.sendMessage(api, "**** Hey everyone, we are live from my backyard and we're \
-     smokin some meats! ****\n\n\n type /zbot to see my actions.");
+    // Put testing code here:
 
-    // This function will update the chat every time seconds
-    setInterval( ()=>{ handler.updateChat(api); }, time);
+    return;
+}
+
+// inform group when bot starts
+_sendStartingMessage = function (api)
+{
+    //api.sendMessage("Beta bot has started...", strings.boysId);
+    api.sendMessage("Beta bot has started...", strings.mySenderId);
+}
+
+// send the current time in a msg to receiverID
+var send_current_time = function (api, receiverID, msg = "")
+{
+    api.sendMessage(msg + t.currentTime(true), receiverID);
+}
+
+// set the start time and save to obj in file
+_setStartTime = function ()
+{
+    // read obj from file
+    var obj = json.readObjFromFile(strings.botInfoPath);
+
+    // set the starting time
+    obj["startDate"] = t.dateTime();
+
+    // save object to file
+    json.writeFileJson(strings.botInfoPath, obj);
+}
+
+// Log details about every messages
+log_messages = function (api, event)
+{
+    // Get name of person who sent message
+    msgHandler.getSenderName(api, event, (senderName) =>
+    {
+        // package obj
+        obj = {
+            "sender":senderName,
+            "datetime":t.dateTime(),
+            "body":event.body
+        }
+
+        // add new object to message log list
+        json.addToList(strings.logMsgPath, obj);
+    });
+}
+
+// Set the current leader
+_setLeader = function (api)
+{
+    // read score obj and leader obj from file form file
+    var scoreObj = json.readObjFromFile(strings.scorePath);
+
+    // get highest property
+    var name;
+    var max = 0;
+    for (var k in scoreObj)
+    {
+        // skip these keys
+        if (k === "total" || k === "daily_total") continue;
+
+        // get the max value and the name of that value
+        if (scoreObj[k] > max)
+        {
+            name = k;
+            max = scoreObj[k]
+        }
+    }
+
+    var userProfile = usr.getProfileByName(name);
+
+    // build leader obj
+    var leaderObj =
+    {
+        "id" : userProfile["id"],
+        "name" : name,
+        "nickname" : userProfile["nickname"],
+        "score" : max
+    };
+
+    // if leaders name isn't already set then set it
+    if (userProfile["nickname"] != strings.leaderName)
+    {
+        var newName = strings.leaderName + " " + userProfile["nickname"];
+        // nickname, threadID, userID
+        console.log("ID: " + userProfile["id"]);
+        api.changeNickname(newName, strings.boysId, userProfile["id"], (err) =>
+        {
+            if(err) return console.error(err);
+        });
+    }
+
+    // save leader to file
+    json.writeFileJson(strings.leaderPath, leaderObj);
+}
+
+// builds user nickname json file on startup.
+_buildNicknameFile = function (api)
+{
+    msgHandler.getNicknames (api, strings.boysId, (nicknameObj) =>
+    {
+        // write nickname obj to file
+        json.writeFileJson(strings.nicknamePath, nicknameObj);
+        console.log("UPDATED NICKNAMES");
+    });
+}
+
+// Handle message event
+handleEventMessage = function (api, event)
+{
+    // log message and details to file
+    log_messages(api, event);
+
+    // TESTER CODE FOR THE BOYS. WILL BE REMOVED
+    if (event.body.toLowerCase() === '/msgtotal')
+    {
+        api.getThreadInfo(event.threadID, (err, info) =>
+        {
+            var msg = '' + info['messageCount'];
+            console.log(msg);
+            api.sendMessage("Total Msgs: " + msg,event.threadID);
+        });
+    }
+
+    // Control all message events
+    msgHandler.handleMessageEvent(api, event);
+}
+
+// Start Here::
+login(strings.cred, (err, api) => {
+//login(json.readAppstate(), (err, api) => {
+    // Return error if login fail
+    if (err) return console.error(err);
+
+    // save app data to file for future login
+    json.writeFileJson("appstate.json", api.getAppState());
+
+    // TODO: find better way. cannot update nicknames every time because
+    // current leaders nicknames will be rewritten as 'champ'
+    if (updateNicknames) _buildNicknameFile(api);
 
     // Set API parameters
     api.setOptions({
+        logLevel: "error",
         selfListen: false,
-        listenEvents: true,
-        logLevel: "error"
+        listenEvents: true
     });
 
-    // Start listening for events to the account
-    var stopListening = api.listen((err, event) => {
+    // Send Starting message
+    _sendStartingMessage(api);
+
+    // set starttime and save to file
+    _setStartTime();
+
+    var stopListening = api.listen((err, event) =>
+    {
+        // Check for any error
         if(err) return console.error(err);
 
-        api.markAsRead(event.threadID, (err) => {
-            if(err) console.error(err);
-        });
-
-        if (listening)
+        // bots off switch
+        if(event.body === '/zzz' && event.senderID == strings.mySenderId)
         {
-            // Check event types and react
-            switch(event.type)
-            {
-                // event was a MESSAGE
-                case "message":
-                    // Check if msg sent to chat matches bot command. send appropriate response
-                    handler.checkForCommands(api, event)
+            api.sendMessage("Shutting down...", strings.mySenderId);
+            console.log("Stop Listening: " + stopListening()); // debugging
+            return stopListening();
+        }
 
-                    // Shut down bot by sending /zzz in fb chat
-                    if(event.body === '/zzz' && event.senderID == MY_SENDER_ID)
-                    {
-                        api.sendMessage("\n\n\n*** ZuckerBot shutting down... ***\n\n\n", event.threadID);
-                        listening = false;
-                        api.logout(null);
-                        return stopListening();
-                    }
+        // Handle event types
+        switch(event.type)
+        {
+            // Respond to message type event type
+            case "message":
+                handleEventMessage(api, event);
+                break;
 
-                    // Update number of messages sent to group
-                    handler.updateMessageCounter(api, event);
-                    break;
+            // from, fromMobile, isTyping, threadID, type
+            case "typ":
+                console.log("typ");
+                break;
 
-                // event was a READ RECEIPT
-                case "read_receipt":
-                    break;
+            // reader, threadID, time, type
+            case "read_receipt":
+                console.log("read_receipt");
+                break;
 
-                case "message_reaction":
-                    break;
+            // threadID, time, type
+            case "read":
+                console.log("read");
+                break;
 
-                // fires when someone is typing
-                case "typ":
-                    break;
+            // messageID, offlineThreadingID, reaction, senderID,
+            //  threadID, timestamp, type, userID
+            case "message_reaction":
+                break;
 
-                // event was a default event
-                default:
-                    console.log("Default case triggered by " +  event.type)
-            }
+            default:
+                console.log("DEFAULT TYPE: " + event.type);
+                break;
         }
     });
 });
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-// STASH
-/*
-api.sendMessage("TEST BOT: " + event.body, event.threadID);
-console.log(event.type);
-
-
-
-
-// event was a READ RECEIPT
-case "read_receipt":
-    var date = new Date(event.time / 1000).getTimezoneOffset();
-    var formattedTime = (new Date()).toUTCString();
-
-    console.log("Message Read at: " + formattedTime);
-    break;
-
-*/
